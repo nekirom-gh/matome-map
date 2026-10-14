@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>まとめてマップ</title>
+<style>
+:root{
+  --bg:#ffffff; --text:#202124; --muted:#70757a; --field:#f1f3f4; --line:#dadce0;
+  --accent:#1a73e8; --accent-text:#ffffff;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1b1c; --text:#e8eaed; --muted:#9aa0a6; --field:#2a2b2d; --line:#3c4043;
+    --accent:#8ab4f8; --accent-text:#0e2246; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1b1c; --text:#e8eaed; --muted:#9aa0a6; --field:#2a2b2d; --line:#3c4043;
+  --accent:#8ab4f8; --accent-text:#0e2246; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;line-height:1.5}
+.wrap{max-width:480px;margin:0 auto;padding:24px 16px;display:grid;gap:20px;grid-template-columns:minmax(0,1fr)}
+h1{font-size:20px;font-weight:600;margin:0}
+.list{display:grid;gap:8px;grid-template-columns:minmax(0,1fr)}
+.row{display:flex;gap:4px;align-items:center}
+.dot{flex:none;width:22px;font-size:13px;font-weight:600;color:var(--muted);text-align:center}
+input[type=text]{flex:1;min-width:0;font:inherit;font-size:16px;padding:11px 12px;border-radius:10px;
+  border:0;background:var(--field);color:var(--text)}
+input[type=text]:focus{outline:2px solid var(--accent);outline-offset:-2px}
+button,.btn{font:inherit;cursor:pointer;text-align:center;text-decoration:none;border:0;background:none;color:var(--text);border-radius:10px}
+button:focus-visible,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.x{flex:none;width:36px;height:44px;color:var(--muted);font-size:16px}
+.x:disabled{visibility:hidden}
+.link{color:var(--accent);padding:4px 0;justify-self:start;font-size:15px}
+.link:disabled{color:var(--muted);cursor:default}
+.modes{display:grid;grid-template-columns:repeat(4,1fr);background:var(--field);border-radius:10px;padding:3px}
+.modes button{padding:8px 0;font-size:14px;color:var(--muted)}
+.modes button[aria-pressed=true]{background:var(--bg);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.15)}
+.primary{display:block;background:var(--accent);color:var(--accent-text);font-weight:600;padding:14px;font-size:16px}
+.copy{color:var(--muted);font-size:14px;padding:4px;justify-self:center}
+.field{position:relative;flex:1;min-width:0;display:flex}
+.field input{padding-right:44px}
+.sugg{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:10;margin:0;padding:4px 0;list-style:none;
+  background:var(--bg);border:1px solid var(--line);border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.15);max-height:300px;overflow-y:auto}
+.sugg li{padding:8px 12px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.sugg li[aria-selected=true],.sugg li:hover{background:var(--field)}
+.sugg .nm{flex:1;min-width:0}
+.sugg .sub{display:block;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sugg .km{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.sugg .msg{color:var(--muted);font-size:13px;cursor:default}
+.pin{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--accent);pointer-events:none}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--text);color:var(--bg);
+  padding:8px 14px;border-radius:999px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>まとめてマップ</h1>
+
+  <div class="list">
+    <div class="row">
+      <span class="dot">出</span>
+      <span class="field"><input type="text" id="start" placeholder="出発地（空欄でもOK）" autocomplete="off" aria-label="出発地"></span>
+      <button id="here" class="x" title="現在地を使う" aria-label="現在地を使う">◎</button>
+    </div>
+    <div class="list" id="list"></div>
+    <button id="add" class="link">＋ 目的地を追加</button>
+  </div>
+
+  <div class="modes" id="modes" role="group" aria-label="移動手段">
+    <button data-mode="driving">車</button>
+    <button data-mode="transit">電車</button>
+    <button data-mode="walking">徒歩</button>
+    <button data-mode="bicycling">自転車</button>
+  </div>
+
+  <div class="list">
+    <a id="open" class="btn primary" href="https://www.google.com/maps" target="_blank" rel="noopener">Googleマップで開く</a>
+    <button id="copy" class="copy">リンクをコピー</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const MAX = 10; // Google マップの経路URLは目的地＋経由地9か所まで
+const KEY = 'mdm:v2';
+const JAPAN_BBOX = '122,20,154,46.5';
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(){ try{ return JSON.parse(localStorage.getItem(KEY)) || null }catch(e){ return null } },
+  set(v){ try{ localStorage.setItem(KEY, JSON.stringify(v)) }catch(e){} }
+};
+
+// 地点 = { text, lat, lon }。候補から選んだ地点だけ lat/lon を持ち、Googleマップには座標で渡す
+const blank = () => ({ text:'', lat:null, lon:null });
+let state = Object.assign({ start: blank(), dests:[blank(), blank()], mode:'driving' }, store.get() || {});
+if (!state.dests.length) state.dests = [blank()];
+
+function save(){ store.set(state) }
+const hasGeo = (pt) => pt && pt.lat != null && pt.lon != null;
+// index -1 = 出発地。自分より前で一番近い「場所が確定した地点」
+function anchorBefore(i){
+  for (let k = i - 1; k >= 0; k--) if (hasGeo(state.dests[k])) return state.dests[k];
+  return i >= 0 && hasGeo(state.start) ? state.start : null;
+}
+function pointAt(i){ return i < 0 ? state.start : state.dests[i] }
+
+function km(a, b){
+  const R = 6371, r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+const fmtKm = (d) => d < 1 ? Math.round(d * 1000) + 'm' : d < 100 ? d.toFixed(1) + 'km' : Math.round(d) + 'km';
+
+// ---- 候補表示（OpenStreetMap の Photon 検索。キー不要） ----
+const sugg = document.createElement('ul');
+sugg.className = 'sugg'; sugg.hidden = true; sugg.setAttribute('role', 'listbox');
+let active = null; // { input, index }
+let items = [], sel = -1, timer = 0, seq = 0;
+
+function closeSugg(){ sugg.hidden = true; items = []; sel = -1 }
+
+function label(f){
+  const p = f.properties;
+  const name = p.name || [p.street, p.housenumber].filter(Boolean).join(' ') || p.city || '';
+  const sub = [...new Set([p.state, p.city, p.district, p.locality, p.street].filter(Boolean))]
+    .filter(x => x !== name).join(' ');
+  return { name, sub };
+}
+
+async function search(input, index){
+  const q = input.value.trim();
+  if (q.length < 2) { closeSugg(); return }
+  const anchor = anchorBefore(index);
+  const p = new URLSearchParams({ q, limit:'8', bbox: JAPAN_BBOX });
+  if (anchor) { p.set('lat', anchor.lat); p.set('lon', anchor.lon); p.set('location_bias_scale', '0.1') }
+  const my = ++seq;
+  showMsg('検索中…', input);
+  try {
+    const res = await fetch('https://photon.komoot.io/api/?' + p);
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (my !== seq || active?.input !== input) return;
+    items = data.features.map(f => {
+      const [lon, lat] = f.geometry.coordinates;
+      return { ...label(f), lat, lon, d: anchor ? km(anchor, { lat, lon }) : null };
+    }).filter(x => x.name);
+    if (anchor) items.sort((a, b) => a.d - b.d);
+    sel = -1;
+    if (!items.length) { showMsg('候補が見つかりません。このまま入力してもOKです', input); return }
+    drawSugg(input);
+  } catch (e) {
+    if (my === seq) showMsg('候補を取得できませんでした。このまま入力してもOKです', input);
+  }
+}
+
+function place(input){ input.parentNode.appendChild(sugg); sugg.hidden = false }
+function showMsg(msg, input){ items = []; sugg.innerHTML = `<li class="msg"></li>`; sugg.firstChild.textContent = msg; place(input) }
+function drawSugg(input){
+  sugg.innerHTML = '';
+  items.forEach((it, k) => {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option'); li.setAttribute('aria-selected', k === sel);
+    li.innerHTML = '<span class="nm"><span class="n"></span><span class="sub"></span></span><span class="km"></span>';
+    li.querySelector('.n').textContent = it.name;
+    li.querySelector('.sub').textContent = it.sub;
+    li.querySelector('.km').textContent = it.d != null ? fmtKm(it.d) : '';
+    li.addEventListener('mousedown', (e) => { e.preventDefault(); choose(k) });
+    sugg.appendChild(li);
+  });
+  place(input);
+}
+function choose(k){
+  const it = items[k]; if (!it || !active) return;
+  const pt = pointAt(active.index);
+  Object.assign(pt, { text: it.name, lat: it.lat, lon: it.lon });
+  active.input.value = it.name;
+  save(); closeSugg(); markPins();
+}
+
+function bindField(input, index){
+  input.addEventListener('focus', () => { active = { input, index } });
+  input.addEventListener('input', () => {
+    const pt = pointAt(index);
+    Object.assign(pt, { text: input.value, lat: null, lon: null }); // 手で書き換えたら確定を外す
+    save(); markPins();
+    clearTimeout(timer);
+    if (!input.value.trim()) { closeSugg(); return }
+    timer = setTimeout(() => search(input, index), 350);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
+    const open = !sugg.hidden && items.length;
+    if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      drawSugg(input);
+    } else if (e.key === 'Enter') {
+      if (open && sel >= 0) { e.preventDefault(); choose(sel) } else { closeSugg(); $('open').click() }
+    } else if (e.key === 'Escape') closeSugg();
+  });
+  input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) closeSugg() }, 150));
+}
+
+function markPins(){
+  document.querySelectorAll('.field').forEach(f => {
+    const i = +f.dataset.index, pin = f.querySelector('.pin');
+    pin.hidden = !hasGeo(pointAt(i));
+  });
+}
+
+function render(){
+  closeSugg();
+  const list = $('list');
+  list.innerHTML = '';
+  state.dests.forEach((d, i) => {
+    const li = document.createElement('div');
+    li.className = 'row';
+    li.innerHTML = `<span class="dot">${String.fromCharCode(65 + i)}</span>
+      <span class="field" data-index="${i}"><input type="text" placeholder="目的地" autocomplete="off" aria-label="目的地${String.fromCharCode(65 + i)}"><span class="pin" hidden>確定</span></span>
+      <button class="x" data-act="del" aria-label="削除">✕</button>`;
+    const input = li.querySelector('input');
+    input.value = d.text;
+    bindField(input, i);
+    li.querySelector('[data-act=del]').disabled = state.dests.length === 1;
+    li.querySelector('[data-act=del]').addEventListener('click', () => { state.dests.splice(i, 1); save(); render() });
+    list.appendChild(li);
+  });
+  $('start').value = state.start.text;
+  $('add').disabled = state.dests.length >= MAX;
+  $('add').textContent = state.dests.length >= MAX ? `目的地は${MAX}か所まで` : '＋ 目的地を追加';
+  document.querySelectorAll('#modes button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === state.mode));
+  markPins();
+}
+
+// Googleマップに渡す文字列: 候補で確定した地点は座標、それ以外は入力どおり
+const forGoogle = (pt) => hasGeo(pt) ? `${(+pt.lat).toFixed(6)},${(+pt.lon).toFixed(6)}` : pt.text.trim();
+
+// 地図アプリで開く用（Google Maps URLs 公式形式）
+function dirUrl(){
+  const dests = state.dests.filter(d => d.text.trim()).map(forGoogle);
+  if (!dests.length) return '';
+  const p = new URLSearchParams({ api:'1', travelmode: state.mode });
+  if (state.start.text.trim()) p.set('origin', forGoogle(state.start));
+  p.set('destination', dests[dests.length - 1]);
+  if (dests.length > 1) p.set('waypoints', dests.slice(0, -1).join('|'));
+  return 'https://www.google.com/maps/dir/?' + p.toString();
+}
+
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+const startField = $('start').parentNode;
+startField.dataset.index = '-1';
+startField.insertAdjacentHTML('beforeend', '<span class="pin" hidden>確定</span>');
+bindField($('start'), -1);
+$('add').addEventListener('click', () => {
+  if (state.dests.length >= MAX) return;
+  state.dests.push(blank()); save(); render();
+  const inputs = document.querySelectorAll('#list input'); inputs[inputs.length - 1].focus();
+});
+$('modes').addEventListener('click', (e) => {
+  const m = e.target.closest('button'); if (!m) return;
+  state.mode = m.dataset.mode; save(); render();
+});
+$('here').addEventListener('click', () => {
+  if (!navigator.geolocation) { toast('この端末では現在地が使えません'); return }
+  toast('現在地を取得中…');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => { state.start = { text:'現在地', lat: pos.coords.latitude, lon: pos.coords.longitude }; save(); render(); toast('現在地を出発地にしました') },
+    () => toast('現在地を取得できませんでした'),
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+});
+$('open').addEventListener('click', (e) => {
+  const url = dirUrl(); if (!url) { e.preventDefault(); toast('目的地を1つ以上入れてください'); return }
+  e.currentTarget.href = url; // 実際のリンクとして開く（ポップアップ扱いされない）
+});
+$('copy').addEventListener('click', async () => {
+  const url = dirUrl(); if (!url) { toast('目的地を1つ以上入れてください'); return }
+  try { await navigator.clipboard.writeText(url); toast('リンクをコピーしました') }
+  catch (e) { prompt('このリンクをコピーしてください', url) }
+});
+
+render();
+</script>
+</body>
+</html>
